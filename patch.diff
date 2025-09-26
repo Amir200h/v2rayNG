@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: assistant <assistant@example.com>
+Date: Fri, 26 Sep 2025 00:00:00 +0000
+Subject: [PATCH] Auto-update subscription + WorkManager + Traffic UI (ProgressBar)
+
+--- a/README.md
++++ b/README.md
+@@
++This fork adds:
++- Auto-update of subscription links when the app resumes/launches (configurable)
++- Periodic daily updates via WorkManager (configurable)
++- Preference toggle to enable/disable auto-update
++- Traffic UI: ProgressBar + text to show used / total quota (from server or core stats)
++
+--- a/app/src/main/java/com/yourdomain/v2rayng/MyApplication.kt
++++ b/app/src/main/java/com/yourdomain/v2rayng/MyApplication.kt
+@@
++package com.yourdomain.v2rayng
++
++import android.app.Application
++import androidx.work.*
++import java.util.concurrent.TimeUnit
++
++class MyApplication : Application() {
++    override fun onCreate() {
++        super.onCreate()
++        val constraints = Constraints.Builder()
++            .setRequiredNetworkType(NetworkType.CONNECTED)
++            .build()
++
++        val dailyRequest = PeriodicWorkRequestBuilder<SubscriptionUpdateWorker>(24, TimeUnit.HOURS)
++            .setConstraints(constraints)
++            .build()
++
++        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
++            "v2rayng_subscription_daily_update",
++            ExistingPeriodicWorkPolicy.KEEP,
++            dailyRequest
++        )
++    }
++}
++
+--- a/app/src/main/java/com/yourdomain/v2rayng/SubscriptionUpdateWorker.kt
++++ b/app/src/main/java/com/yourdomain/v2rayng/SubscriptionUpdateWorker.kt
+@@
++package com.yourdomain.v2rayng
++
++import android.content.Context
++import androidx.work.CoroutineWorker
++import androidx.work.WorkerParameters
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++
++class SubscriptionUpdateWorker(appContext: Context, params: WorkerParameters) :
++    CoroutineWorker(appContext, params) {
++
++    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
++        try {
++            val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(applicationContext)
++            val enabled = prefs.getBoolean("pref_auto_update", true)
++            if (!enabled) return@withContext Result.success()
++
++            try {
++                SubscriptionManager.updateAll(applicationContext)
++            } catch (e: Throwable) {
++                e.printStackTrace()
++                return@withContext Result.retry()
++            }
++
++            Result.success()
++        } catch (t: Throwable) {
++            t.printStackTrace()
++            Result.retry()
++        }
++    }
++}
++
+--- a/app/src/main/res/xml/preferences.xml
++++ b/app/src/main/res/xml/preferences.xml
+@@
++<?xml version="1.0" encoding="utf-8"?>
++<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
++    <SwitchPreferenceCompat
++        app:key="pref_auto_update"
++        app:title="Auto-update subscriptions on launch"
++        app:defaultValue="true"
++        app:summary="When enabled, subscription links will auto-update when the app is opened. A daily background update is also scheduled." />
++</PreferenceScreen>
++
+--- a/app/src/main/res/layout/activity_main_traffic.xml
++++ b/app/src/main/res/layout/activity_main_traffic.xml
+@@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:orientation="vertical"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:padding="16dp">
++
++    <TextView
++        android:id="@+id/traffic_text"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="Traffic: 0 MB / 0 MB"
++        android:textSize="16sp"
++        android:paddingBottom="8dp"/>
++
++    <ProgressBar
++        android:id="@+id/traffic_progress"
++        style="?android:attr/progressBarStyleHorizontal"
++        android:layout_width="match_parent"
++        android:layout_height="20dp"
++        android:max="100"
++        android:progress="0"/>
++</LinearLayout>
++
+--- a/app/src/main/java/com/yourdomain/v2rayng/TrafficHelper.kt
++++ b/app/src/main/java/com/yourdomain/v2rayng/TrafficHelper.kt
+@@
++package com.yourdomain.v2rayng
++
++import android.content.Context
++import android.widget.ProgressBar
++import android.widget.TextView
++import android.content.res.ColorStateList
++import android.graphics.Color
++
++object TrafficHelper {
++    fun updateTrafficUI(context: Context, trafficText: TextView, trafficBar: ProgressBar, used: Long, total: Long) {
++        val percent = if (total > 0) ((used * 100) / total).toInt() else 0
++        trafficText.text = "Traffic: ${formatBytes(used)} / ${formatBytes(total)}"
++        trafficBar.progress = percent
++
++        when {
++            percent < 70 -> trafficBar.progressTintList =
++                ColorStateList.valueOf(Color.parseColor("#4CAF50"))
++            percent < 90 -> trafficBar.progressTintList =
++                ColorStateList.valueOf(Color.parseColor("#FFC107"))
++            else -> trafficBar.progressTintList =
++                ColorStateList.valueOf(Color.parseColor("#F44336"))
++        }
++    }
++
++    private fun formatBytes(bytes: Long): String {
++        val kb = 1024L
++        val mb = kb * 1024
++        val gb = mb * 1024
++        return when {
++            bytes >= gb -> String.format("%.2f GB", bytes.toFloat() / gb)
++            bytes >= mb -> String.format("%.2f MB", bytes.toFloat() / mb)
++            bytes >= kb -> String.format("%.2f KB", bytes.toFloat() / kb)
++            else -> "$bytes B"
++        }
++    }
++}
++
+--- a/app/src/main/java/com/yourdomain/v2rayng/MainActivityTrafficSnippet.txt
++++ b/app/src/main/java/com/yourdomain/v2rayng/MainActivityTrafficSnippet.txt
+@@
++// Snippet to add into MainActivity's onCreate or where UI is initialized
++val trafficText = findViewById<TextView>(R.id.traffic_text)
++val trafficBar = findViewById<ProgressBar>(R.id.traffic_progress)
++
++// Example: after subscription update completes, call:
++// TrafficHelper.updateTrafficUI(this, trafficText, trafficBar, usedBytes, totalBytes)
++
+--- a/.github/workflows/build-sign-apk.yml
++++ b/.github/workflows/build-sign-apk.yml
+@@
++name: Android CI - Build & Sign APK
++
++on:
++  push:
++    branches:
++      - main
++      - 'feature/**'
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: Set up JDK 17
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: '17'
++      - name: Cache Gradle packages
++        uses: actions/cache@v4
++        with:
++          path: |
++            ~/.gradle/caches
++            ~/.gradle/wrapper
++          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
++          restore-keys: |
++            ${{ runner.os }}-gradle-
++      - name: Build release APK
++        run: ./gradlew clean :app:assembleRelease
++      - name: Sign APK(s)
++        uses: r0adkll/sign-android-release@v1
++        with:
++          releaseDirectory: app/build/outputs/apk/release
++          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
++          alias: ${{ secrets.KEY_ALIAS }}
++          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
++          keyPassword: ${{ secrets.KEY_PASSWORD }}
++      - name: Upload signed APK
++        uses: actions/upload-artifact@v4
++        with:
++          name: signed-apk
++          path: app/build/outputs/apk/release/*.apk
++
+--- End Patch

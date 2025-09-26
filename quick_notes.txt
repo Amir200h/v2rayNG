@@ -1,0 +1,4 @@
+Quick notes:
+- License: upstream v2rayNG is typically under GPL-3.0. When distributing, ensure you provide source code or a link to source changes per GPL.
+- Keep keystore safe; losing it means you cannot release updates with same signing key.
+- Test on one device first before distributing widely.
